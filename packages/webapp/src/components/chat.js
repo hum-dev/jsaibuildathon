@@ -12,6 +12,8 @@ export class ChatInterface extends LitElement {
       messages: { type: Array },
       inputMessage: { type: String },
       isLoading: { type: Boolean },
+      isRetrieving: { type: Boolean },
+      ragEnabled: { type: Boolean },
     };
   }
 
@@ -21,6 +23,8 @@ export class ChatInterface extends LitElement {
     this.messages = [];
     this.inputMessage = "";
     this.isLoading = false;
+    this.isRetrieving = false;
+    this.ragEnabled = true; // Enable by default
   }
 
   // Render into light DOM so external CSS applies
@@ -40,15 +44,21 @@ export class ChatInterface extends LitElement {
       saveMessages(this.messages);
     }
   }
-
   render() {
-    // Render the chat UI: header, messages, and input area
     return html`
       <div class="chat-container">
         <div class="chat-header">
           <button class="clear-cache-btn" @click=${this._clearCache}>
             🧹Clear Chat
           </button>
+          <label class="rag-toggle">
+            <input
+              type="checkbox"
+              ?checked=${this.ragEnabled}
+              @change=${this._toggleRag}
+            />
+            Use Employee Handbook
+          </label>
         </div>
         <div class="chat-messages">
           ${this.messages.map(
@@ -63,11 +73,32 @@ export class ChatInterface extends LitElement {
                     >${message.role === "user" ? "You" : "AI"}</span
                   >
                   <p>${message.content}</p>
+                  ${this.ragEnabled &&
+                  message.sources &&
+                  message.sources.length > 0
+                    ? html`
+                        <details class="sources">
+                          <summary>📚 Sources</summary>
+                          <div class="sources-content">
+                            ${message.sources.map(
+                              (source) => html`<p>${source}</p>`
+                            )}
+                          </div>
+                        </details>
+                      `
+                    : ""}
                 </div>
               </div>
             `
           )}
-          ${this.isLoading
+          ${this.isRetrieving
+            ? html`
+                <div class="message system-message">
+                  <p>📚 Searching employee handbook...</p>
+                </div>
+              `
+            : ""}
+          ${this.isLoading && !this.isRetrieving
             ? html`
                 <div class="message ai-message">
                   <div class="message-content">
@@ -81,7 +112,7 @@ export class ChatInterface extends LitElement {
         <div class="chat-input">
           <input
             type="text"
-            placeholder="Type your message here..."
+            placeholder="Ask about company policies, benefits, etc..."
             .value=${this.inputMessage}
             @input=${this._handleInput}
             @keyup=${this._handleKeyUp}
@@ -114,6 +145,12 @@ export class ChatInterface extends LitElement {
       this._sendMessage();
     }
   }
+
+  // Handle RAG toggle
+  _toggleRag(e) {
+    this.ragEnabled = e.target.checked;
+  }
+
   // Handle sending a message and receiving a response
   async _sendMessage() {
     if (!this.inputMessage.trim() || this.isLoading) return;
@@ -128,15 +165,20 @@ export class ChatInterface extends LitElement {
     const userQuery = this.inputMessage;
     this.inputMessage = "";
     this.isLoading = true;
-
     try {
+      this.isRetrieving = this.ragEnabled;
       // Call the API to get AI response
-      const aiResponse = await this._apiCall(userQuery);
+      const response = await this._apiCall(userQuery);
+      this.isRetrieving = false;
 
       // Add AI's response to the chat
       this.messages = [
         ...this.messages,
-        { role: "assistant", content: aiResponse },
+        {
+          role: "assistant",
+          content: response.content,
+          sources: response.sources,
+        },
       ];
     } catch (error) {
       // Handle errors gracefully
@@ -151,13 +193,18 @@ export class ChatInterface extends LitElement {
     } finally {
       this.isLoading = false;
     }
-  } // Call the AI API endpoint
+  }
+
+  // Call the AI API endpoint
   async _apiCall(message) {
     try {
       const res = await fetch("http://localhost:3001/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({
+          message,
+          useRAG: this.ragEnabled,
+        }),
       });
 
       if (!res.ok) {
@@ -169,7 +216,10 @@ export class ChatInterface extends LitElement {
         throw new Error("No reply received from server");
       }
 
-      return data.reply;
+      return {
+        content: data.reply,
+        sources: data.sources || [],
+      };
     } catch (error) {
       console.error("API call failed:", error);
       throw error;
